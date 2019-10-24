@@ -99,6 +99,9 @@ void usage()
         "               Usually between 8 and 12.\n"
         "               Default is 11 for DNA and 5 for protein.\n"
         "   -stepSize=N Spacing between tiles. Default is tileSize.\n"
+        "   -distributeSequencesByLens  Instead of giving each thread the same number of\n"
+        "               sequences, distribute sequences to threads based on the sequence\n"
+        "               lengths. Recommended for files with sequences sorted by length.\n"
         "   -oneOff=N   If set to 1, this allows one mismatch in tile and still\n"
         "               triggers an alignments.  Default is 0.\n"
         "   -minMatch=N Sets the number of tile matches.  Usually set from 2 to 4.\n"
@@ -892,6 +895,8 @@ int main(int argc, char *argv[])
         repeats = mask;
     outputFormat = optionVal("out", outputFormat);
     dotEvery = optionInt("dots", 0);
+    bool use_sequence_lens = optionExists("distributeSequencesByLens");
+
     /* set global for fuzzy find functions */
     setFfIntronMax(optionInt("maxIntron", ffIntronMaxDefault));
     setFfExtendThroughN(optionExists("extendThroughN"));
@@ -933,26 +938,44 @@ int main(int argc, char *argv[])
         threads, total_weight, weight_per_thread);
     lineFileRewind(tlf);
 
+    
+    int queryCounts[threads];
+
     /*Calculate, based on the individual weight of each sequence,
     where each thread should start it's processing, while trying
     to mantain a stable total processing weight for each thread.*/
-    int queryCounts[threads];
-    queryCounts[threads-1] = totalQuery;
-    unsigned long last_thread_weight = total_weight;
-    for(int thread_index = 0; thread_index < threads-1; thread_index++){
-        long weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
-        queryCounts[thread_index] = 0;
-        unsigned long thread_weight = 0;
-        while(thread_weight < weight_per_thread){
-            thread_weight += (unsigned) weight;
-            queryCounts[thread_index] += 1;
-            weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+    if(use_sequence_lens){
+        queryCounts[threads-1] = totalQuery;
+        unsigned long last_thread_weight = total_weight;
+        int thread_index;
+        for(thread_index = 0; thread_index < threads-1; thread_index++){
+            long weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+            queryCounts[thread_index] = 0;
+            unsigned long thread_weight = 0;
+            while(thread_weight < weight_per_thread){
+                thread_weight += (unsigned) weight;
+                queryCounts[thread_index] += 1;
+                weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+            }
+            last_thread_weight -= thread_weight;
+            queryCounts[threads-1] -= queryCounts[thread_index];
+            warn("thread %i: %i sequences, %lu processing weight", thread_index, queryCounts[thread_index], thread_weight);
+            if(queryCounts[thread_index] == 0){
+                warn("Could not use sequence lengths to evenly distribute sequence between threads, ");
+                warn("using default sequence distribution instead.");
+                use_sequence_lens = FALSE;
+                break;
+            }
         }
-        last_thread_weight -= thread_weight;
-        queryCounts[threads-1] -= queryCounts[thread_index];
-        warn("thread %i: %i sequences, %lu processing weight", thread_index, queryCounts[thread_index], thread_weight);
+        warn("thread %i: %i sequences, %lu processing weight", threads-1, queryCounts[threads-1], last_thread_weight);
     }
-    warn("thread %i: %i sequences, %lu processing weight", threads-1, queryCounts[threads-1], last_thread_weight);
+    /*Give each thread an equal number of sequences to process*/
+    if(!use_sequence_lens){
+        int thread_index;
+        for(thread_index = 0; thread_index < threads-1; thread_index++){
+            queryCounts[thread_index] = queryCount;
+        }
+    }
 
     lineFileRewind(tlf);
     for (i=1; i<threads; i++)

@@ -106,9 +106,10 @@ boolean faSomeSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, cha
                             DNA **faFastBuf, unsigned *faFastBufSize);
 /* Read in DNA or Peptide FA record. */
 
-boolean faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, char **retName, DNA **faFastBuf, unsigned *faFastBufSize);
+long faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, char **retName, DNA **faFastBuf, unsigned *faFastBufSize);
 /* Read in DNA or Peptide FA record in mixed case.   Allow any upper or lower case
- * letter, or the dash character in. */
+ * letter, or the dash character in.
+ * Returns the processing weight of the sequence. If there are no more sequences, returns 0.*/
 
 void faToProtein(char *poly, int size);
 /* Convert possibly mixed-case protein to upper case.  Also

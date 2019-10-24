@@ -1,0 +1,5 @@
+test/*
+.vscode/*
+*.0
+pblat
+*.a

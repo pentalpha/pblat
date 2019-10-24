@@ -430,7 +430,7 @@ if (fclose(f) != 0)
     errnoAbort("fclose failed");
 }
 
-boolean faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, char **retName,
+long faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, char **retName,
                              DNA **faFastBuf, unsigned *faFastBufSize)
 /* Read in DNA or Peptide FA record in mixed case.   Allow any upper or lower case
  * letter, or the dash character in. */
@@ -440,7 +440,6 @@ boolean faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, ch
     char name[512];
     int lineSize, i;
     char *line;
-
     dnaUtilOpen();
 
     /* Read first line, make sure it starts with '>', and read first word
@@ -450,7 +449,7 @@ boolean faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, ch
     {
         if (retDna!=NULL) *retDna = NULL;
         if (retSize!=NULL) *retSize = 0;
-        return FALSE;
+        return 0;
     }
     if (line[0] == '>')
     {
@@ -493,8 +492,9 @@ boolean faMixedSpeedReadNext(struct lineFile *lf, DNA **retDna, int *retSize, ch
     {
         warn("Invalid fasta format: sequence size == 0 for element %s",name);
     }
-
-    return TRUE;
+    long weight = bufIx;
+    //printf("printf1: weight %i for sequence %s\n", weight, name);
+    return weight;
 }
 
 void faToProtein(char *poly, int size)

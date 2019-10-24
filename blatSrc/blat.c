@@ -415,9 +415,9 @@ void* performSearch(void* args)
         printf("Searched %lld bases in %d sequences\n", totalSize, count);
 }
 
-void searchOneIndex(int fileCount, char *files[], struct lineFile *lf[], struct genoFind *gf,
+void searchOneIndex(int* fileCount, char *files[], struct lineFile *lf[], struct genoFind *gf,
                     boolean isProt, struct hash *maskHash, FILE *out[], struct gfOutput *gvo[],
-                    boolean showStatus)
+                    boolean showStatus, int threads)
 /* Search all sequences in all files against single genoFind index. */
 {
     int        i;
@@ -428,7 +428,7 @@ void searchOneIndex(int fileCount, char *files[], struct lineFile *lf[], struct 
     for (i=0; i<threads; i++)
     {
         args[i]=(void**)malloc(sizeof(void*)*10);
-        args[i][1]=&fileCount;
+        args[i][1]=&(fileCount[i]);
         args[i][2]=files;
         args[i][4]=gf;
         args[i][5]=&isProt;
@@ -567,8 +567,8 @@ void* performBigblat(void* args)
     }
 }
 
-void bigBlat(struct dnaSeq *untransList, int queryCount, char *queryFiles[], struct lineFile *lf[], boolean transQuery,
-             boolean qIsDna, FILE *out[], struct gfOutput *gvo[], boolean showStatus)
+void bigBlat(struct dnaSeq *untransList, int* queryCounts, char *queryFiles[], struct lineFile *lf[], boolean transQuery,
+             boolean qIsDna, FILE *out[], struct gfOutput *gvo[], boolean showStatus, int threads)
 /* Run query against translated DNA database (3 frames on each strand). */
 {
     int             frame, i;
@@ -589,7 +589,7 @@ void bigBlat(struct dnaSeq *untransList, int queryCount, char *queryFiles[], str
 
 
     if (showStatus)
-        printf("Blatx %d sequences in database, %d files in query\n", slCount(untransList), queryCount);
+        printf("Blatx %d sequences in database, %d files in query\n", slCount(untransList), queryCounts[0]);
 
     /* Figure out how to manage query case.  Proteins want to be in
      * upper case, generally, nucleotides in lower case.  But there
@@ -632,7 +632,7 @@ void bigBlat(struct dnaSeq *untransList, int queryCount, char *queryFiles[], str
         for (i=0; i<threads; i++)
         {
             args[i]=(void**)malloc(sizeof(void*)*15);
-            args[i][1]=&queryCount;
+            args[i][1]=&(queryCounts[i]);
             args[i][2]=queryFiles;
             args[i][4]=gfs;
             args[i][5]=t3Hash;
@@ -682,7 +682,7 @@ void bigBlat(struct dnaSeq *untransList, int queryCount, char *queryFiles[], str
 }
 
 
-void blat(char *dbFile, int queryCount, char **queryFiles, struct lineFile **lf, FILE *out[])
+void blat(char *dbFile, int* queryCounts, char **queryFiles, struct lineFile **lf, FILE *out[], int threads)
 /* blat - Standalone BLAT fast sequence search command line tool. */
 {
     char **dbFiles;
@@ -749,16 +749,16 @@ void blat(char *dbFile, int queryCount, char **queryFiles, struct lineFile **lf,
         if (mask != NULL)
             gfClientUnmask(dbSeqList);
 
-        searchOneIndex(queryCount, queryFiles, lf, gf, tIsProt, maskHash, out, gvo, showStatus);
+        searchOneIndex(queryCounts, queryFiles, lf, gf, tIsProt, maskHash, out, gvo, showStatus, threads);
         freeHash(&maskHash);
     }
     else if (tType == gftDnaX && qType == gftProt)
     {
-        bigBlat(dbSeqList, queryCount, queryFiles, lf, FALSE, TRUE, out, gvo, showStatus);
+        bigBlat(dbSeqList, queryCounts, queryFiles, lf, FALSE, TRUE, out, gvo, showStatus, threads);
     }
     else if (tType == gftDnaX && (qType == gftDnaX || qType == gftRnaX))
     {
-        bigBlat(dbSeqList, queryCount, queryFiles, lf, TRUE, qType == gftDnaX, out, gvo, showStatus);
+        bigBlat(dbSeqList, queryCounts, queryFiles, lf, TRUE, qType == gftDnaX, out, gvo, showStatus, threads);
     }
     else
     {
@@ -918,20 +918,61 @@ int main(int argc, char *argv[])
     
     queryCount=0;
     struct lineFile *tlf = lineFileOpen(queryFiles[0], TRUE);
-    while (faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize))
+    long weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+    unsigned long total_weight = 0;
+    while (weight){
+        total_weight += (unsigned) weight;
+        weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
         queryCount++;
-    queryCount=queryCount/threads+1;
+    }
     
+    unsigned long weight_per_thread = total_weight / (threads);
+    int totalQuery=queryCount;
+    queryCount=queryCount/threads+1;
+    warn("%i threads, %lu total processing weight, %lu weight per thread\n",
+        threads, total_weight, weight_per_thread);
+    lineFileRewind(tlf);
+
+    /*Calculate, based on the individual weight of each sequence,
+    where each thread should start it's processing, while trying
+    to mantain a stable total processing weight for each thread.*/
+    int queryCounts[threads];
+    queryCounts[threads-1] = totalQuery;
+    unsigned long last_thread_weight = total_weight;
+    for(int thread_index = 0; thread_index < threads-1; thread_index++){
+        long weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+        queryCounts[thread_index] = 0;
+        unsigned long thread_weight = 0;
+        while(thread_weight < weight_per_thread){
+            thread_weight += (unsigned) weight;
+            queryCounts[thread_index] += 1;
+            weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+        }
+        last_thread_weight -= thread_weight;
+        queryCounts[threads-1] -= queryCounts[thread_index];
+        warn("thread %i: %i sequences, %lu processing weight", thread_index, queryCounts[thread_index], thread_weight);
+    }
+    warn("thread %i: %i sequences, %lu processing weight", threads-1, queryCounts[threads-1], last_thread_weight);
+
     lineFileRewind(tlf);
     for (i=1; i<threads; i++)
     {
-        cnt=queryCount;
-        while (cnt-- && faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize));
+        cnt=queryCounts[i];
+        long weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+        //unsigned long thread_weight = 0;
+        //int seqs = 0;
+        while (cnt-- && weight){
+            //thread_weight += (unsigned) weight;
+            //seqs += 1;
+            weight = faMixedSpeedReadNext(tlf, NULL, NULL, NULL, &faFastBuf, &faFastBufSize);
+        }
+
+        //warn("thread %i weight %lu and %i sequences\n", i+1, thread_weight, seqs);
         lineFileSeek(lf[i], tlf->bufOffsetInFile + tlf->lineStart, SEEK_SET);
     }
     lineFileClose(&tlf);
     faFreeFastBuf(&faFastBuf, &faFastBufSize);
-
+    //errAbort("finished calculating weights");
 
     out=(FILE**)malloc(sizeof(FILE*) * threads);
     out[0]=mustOpen(argv[3], "w");
@@ -944,7 +985,7 @@ int main(int argc, char *argv[])
 
 
     /* Call routine that does the work. */
-    blat(argv[1], queryCount, queryFiles, lf, out);
+    blat(argv[1], queryCounts, queryFiles, lf, out, threads);
     
 
     for (i=0; i<threads; i++)
